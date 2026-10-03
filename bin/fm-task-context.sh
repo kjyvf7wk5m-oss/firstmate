@@ -53,8 +53,8 @@
 #   reconcile <task> re-reads task-owned report artifacts and metadata.
 #   activity exports the bounded activity document.
 #
-# All writes are same-directory atomic mv operations under umask 077 and the
-# state/.task-context.lock lock.
+# All writes are same-directory atomic mv operations under umask 077 and a
+# per-task state/.task-context.<task>.lock lock.
 # Existing malformed context records are not overwritten by mutation commands;
 # activity marks that task as legacy/thin instead.
 #
@@ -70,7 +70,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-LOCK="$STATE/.task-context.lock"
+LOCK_PREFIX="$STATE/.task-context"
 SCHEMA_ID=firstmate.task-context.v1
 ACTIVITY_SCHEMA_ID=firstmate.activity.v1
 
@@ -333,15 +333,15 @@ merge_existing_arrays() { # <task> <record-json>
   report_excerpt=$(report_excerpt_json "$id")
   if valid_context "$path" "$id"; then
     record=$(jq -c --slurpfile old "$path" '
-      .decisions_constraints = (($old[0].decisions_constraints // []) + (.decisions_constraints // [])
-        | unique_by([.type, (.key // ""), .summary]))
-      | .artifacts = (($old[0].artifacts // []) + (.artifacts // [])
+      .decisions_constraints = ((.decisions_constraints // []) + ($old[0].decisions_constraints // [])
+        | unique_by(if (.key // null) == null then [.type, .key, .summary] else [.type, .key] end))
+      | .artifacts = ((.artifacts // []) + ($old[0].artifacts // [])
         | unique_by([.type, (.url // ""), (.path // ""), (.label // "")]))
     ' <<<"$record") || return 1
   fi
   if [ "$report_excerpt" != null ]; then
     record=$(jq -c --arg path "data/$id/report.md" --argjson excerpt "$report_excerpt" '
-      .artifacts = ((.artifacts // []) + [{type:"report", label:"Report", path:$path, excerpt:$excerpt}]
+      .artifacts = ([{type:"report", label:"Report", path:$path, excerpt:$excerpt}] + (.artifacts // [])
         | unique_by([.type, (.url // ""), (.path // ""), (.label // "")]))
     ' <<<"$record") || return 1
   fi
@@ -356,13 +356,6 @@ update_dispatched() { # <task> <kind> <project> <mode>
   write_record "$id" "$record"
 }
 
-status_text_after_colon() { # <line>
-  case "$1" in
-    *:*) printf '%s\n' "${1#*:}" | trim_text ;;
-    *) printf '%s\n' "$1" | trim_text ;;
-  esac
-}
-
 extract_pr_url() { # <line>
   printf '%s\n' "$1" | sed -n 's#.*\(https://[^[:space:]]*/pull/[0-9][0-9]*\).*#\1#p' | head -1
 }
@@ -372,7 +365,7 @@ update_status() { # <task> <line>
   ensure_task_confined "$id" || return $?
   status_line_verb "$line" verb
   case "$verb" in [a-z]*) case "$verb" in *[!a-z-]*) verb='' ;; esac ;; *) verb='' ;; esac
-  text=$(status_text_after_colon "$line")
+  text=$(status_line_note "$line" | trim_text)
   routine_status_line "$verb" "$text" && return 0
   state=$(normalize_state "$verb")
   [ "$state" != unknown ] || return 0
@@ -565,6 +558,7 @@ case "$cmd" in
   *)
     task_ok "$2" || exit 2
     mkdir -p "$STATE" || exit 1
+    LOCK="$LOCK_PREFIX.$2.lock"
     fm_lock_acquire_wait "$LOCK" || exit 1
     trap 'fm_lock_release "$LOCK"' EXIT
     case "$cmd" in
