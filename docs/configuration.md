@@ -573,6 +573,11 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
 
+## Task context activity export
+
+`bin/fm-task-context.sh` owns the private per-task context schema, mutation contract, and `activity` export consumed by Recent Activity surfaces such as Kanary `/api/activity`.
+The export keeps the existing 90-day default window unless `FM_ACTIVITY_RETENTION_DAYS` is set to a positive integer for that read.
+
 ## Waiting worker spends no turns (config/wait-no-turns)
 
 The optional local, gitignored `config/wait-no-turns` presence flag opts this home into keeping a waiting worker from spending turns until it is answered.
