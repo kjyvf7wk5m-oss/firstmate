@@ -3803,8 +3803,10 @@ if [ -n "$LAUNCH_HOME_TOKEN" ]; then
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-# Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is
-# retired so its last lines are captured; off costs one file test.
+# Durable task context is updated before runtime status is retired, so Recent
+# Activity survives cleanup. The opt-in fleet ledger captures final status lines
+# at the same boundary; off costs one file test.
+"$SCRIPT_DIR/fm-task-context.sh" cleaned_up "$ID" >/dev/null 2>&1 || true
 [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" cleaned_up "$ID" || true
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 fm_wake_queue_prune_task "$STATE" "$ID" "$T" 2>/dev/null || true
