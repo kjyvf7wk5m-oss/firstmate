@@ -218,6 +218,8 @@ else
 fi
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 # The merge-time re-record is not a new review-ready PR, so it writes nothing.
+# Durable task context for Recent Activity follows the same not-merge-time boundary.
+[ "${FM_PR_CHECK_MERGE:-}" = 1 ] || "$SCRIPT_DIR/fm-task-context.sh" pr_ready "$ID" "$URL" >/dev/null 2>&1 || true
 [ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/fleet-ledger" ] || [ "${FM_PR_CHECK_MERGE:-}" = 1 ] \
   || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-fleet-ledger.sh" pr_ready "$ID" "$URL" || true
 # The contribution observer uses the same authenticated check mechanism and

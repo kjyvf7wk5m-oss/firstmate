@@ -857,7 +857,7 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     # may not carry an unevaluated substitution that a file-write tool would
     # copy through verbatim.
     # shellcheck disable=SC2016 # Match literal backticks in the generated interface.
-    append=$(sed -n '/`echo "{state}/s/.*`\(echo .*\)`.*/\1/p' "$brief")
+    append=$(sed -n '/`fm_status_line=/s/.*`\(fm_status_line=.*\)`.*/\1/p' "$brief")
     now=$(date +%s)
     append=${append//\{state\}/done}
     append=${append//\{one short line\}/test event}

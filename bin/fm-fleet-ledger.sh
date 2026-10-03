@@ -153,6 +153,7 @@ append() {
 # The status-line grammar belongs to bin/fm-classify-lib.sh; this only projects it.
 append_status() { # <task> <status-line>
   local task=$1 line=$2 verb key text
+  "$SCRIPT_DIR/fm-task-context.sh" status "$task" "$line" >/dev/null 2>&1 || true
   status_line_verb "$line" verb
   case "$verb" in [a-z]*) case "$verb" in *[!a-z-]*) verb='' ;; esac ;; *) verb='' ;; esac
   key=$(_fm_decision_key "$line" 2>/dev/null) || key=''
