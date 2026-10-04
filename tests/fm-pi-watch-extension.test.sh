@@ -429,6 +429,74 @@ EOF
   pass "Pi fm_watch_arm_pi reports an honest confirming state during the arm child's confirm window, then steady-state once it confirms"
 }
 
+# confirmArmResult's readiness wait can end two different ways: the timeout
+# elapses with the child still alive (covered above, "confirming"), or the
+# child fails and closes while the wait is still pending. A closed child
+# already has its own definitive "watcher: FAILED"/retry wake queued through
+# the ordinary close-classification path (observeEstablishedArm / the
+# armChild "close" handler's scheduleRetry), so confirmArmResult must not
+# paper over that with its own "confirming" message - it must return
+# activateOwnedWatch's original "started" result untouched, promptly, rather
+# than waiting out the full readiness timeout. A regression here would either
+# overclaim confirmation progress that is not happening, or silently stall
+# the caller for the whole timeout on a child that is already gone.
+test_pi_tool_keeps_original_message_when_arm_child_closes_during_confirm() {
+  local repo home plugin log out status
+  repo="$TMP_ROOT/pi-arm-readiness-close-root"
+  home="$TMP_ROOT/pi-arm-readiness-close-home"
+  log="$TMP_ROOT/pi-arm-readiness-close.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # The arm child exits immediately, without ever printing a "watcher:
+  # started" line, so its readiness promise settles false via the close
+  # handler almost instantly - well before the generous 5s readiness timeout
+  # below, which exists only to prove the wait does not stall for its full
+  # duration on an already-closed child.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+exit 1
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_PI_ARM_READY_TIMEOUT_MS=5000 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+
+const start = Date.now();
+const result = await tool.execute("tool-call", {}, undefined, undefined, {});
+const elapsedMs = Date.now() - start;
+const text = result.content[0]?.text ?? "";
+if (!text.startsWith("watcher: started Pi extension arm child")) {
+  throw new Error(`closed arm child's result was overridden instead of keeping activateOwnedWatch's own message: ${text}`);
+}
+if (text.startsWith("watcher: confirming")) {
+  throw new Error(`closed arm child was incorrectly reported as still confirming: ${text}`);
+}
+if (elapsedMs > 2000) {
+  throw new Error(`confirmArmResult waited near the full 5000ms readiness timeout instead of returning promptly once the child closed (elapsed=${elapsedMs}ms)`);
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi arm-readiness confirmation must keep the original result when the arm child closes during the wait"
+  [ -z "$out" ] || fail "Pi arm-readiness close-during-confirm test printed output: $out"
+  pass "Pi fm_watch_arm_pi keeps its original started message, returned promptly, when the arm child closes before confirming"
+}
+
 test_pi_actionable_close_starts_single_successor_before_delivery() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-continuous-rearm-root"
@@ -5281,6 +5349,7 @@ test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_tool_confirms_arm_readiness_before_reporting_healthy
+test_pi_tool_keeps_original_message_when_arm_child_closes_during_confirm
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_actionable_output_waits_for_predecessor_close
 test_pi_branch_offer_owns_actionable_wake
