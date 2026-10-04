@@ -3806,7 +3806,12 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Durable task context is updated before runtime status is retired, so Recent
 # Activity survives cleanup. The opt-in fleet ledger captures final status lines
 # at the same boundary; off costs one file test.
-"$SCRIPT_DIR/fm-task-context.sh" cleaned_up "$ID" >/dev/null 2>&1 || true
+# A nested remote secondmate keeps its control data inside the home that was just
+# removed; only update context when that data directory still exists, or this
+# side-band record would recreate the retired home before teardown returns.
+if [ "$KIND" != secondmate ] || { [ -d "$DATA" ] && [ ! -L "$DATA" ]; }; then
+  "$SCRIPT_DIR/fm-task-context.sh" cleaned_up "$ID" >/dev/null 2>&1 || true
+fi
 [ ! -e "$CONFIG/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-fleet-ledger.sh" cleaned_up "$ID" || true
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 fm_wake_queue_prune_task "$STATE" "$ID" "$T" 2>/dev/null || true

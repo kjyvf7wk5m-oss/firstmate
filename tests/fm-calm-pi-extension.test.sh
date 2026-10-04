@@ -1691,7 +1691,10 @@ async function assertStockHtmlRendering(command, submitData) {
       result.isError,
     );
     if (!callHtml || !resultHtml?.expanded) {
-      throw new Error(`${name} disappeared from ${command} HTML while calm mode was on`);
+      throw new Error(
+        `${name} disappeared from ${command} HTML while calm mode was on ` +
+        `(call=${Boolean(callHtml)} result=${Boolean(resultHtml?.expanded)})`,
+      );
     }
   }
   editorText = "";
