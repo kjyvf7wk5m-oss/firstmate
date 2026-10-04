@@ -32,6 +32,14 @@ GitHub Actions and Dependabot are exempt so their automation keeps working, but 
 
 See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
+## This downstream fork
+
+`kjyvf7wk5m-oss/firstmate` is a maintained delivery fork, not a step toward contributing back to `kunchenguid/firstmate`.
+Ordinary development here skips the "Workflow" steps above and instead pushes straight through `no-mistakes` against this fork's own `origin`, which opens the pull request directly against this fork's own `main`.
+The `upstream` remote, `kunchenguid/firstmate`, stays a read-only source of core concepts and selected future updates.
+Its push URL is set to a non-push placeholder so pushing there fails locally, and no branch, PR, issue, or other contribution is published there from this fork.
+The GitHub Actions CI in [`ci.yml`](.github/workflows/ci.yml) and the required-check procedure below validate this fork's own pull requests the same way.
+
 ## Maintaining required checks
 
 GitHub required checks are configured in the repository's existing main ruleset, not activated by committing workflow YAML.
