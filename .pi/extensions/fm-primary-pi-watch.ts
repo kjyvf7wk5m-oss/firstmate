@@ -964,6 +964,43 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  // An explicit arm check (the fm_watch_arm_pi tool, or the /fm-watch-arm-pi
+  // command) must not tell the caller "started"/"unchanged" before the arm
+  // child this result describes has actually confirmed a fresh lock and
+  // beacon: liveArmChild only proves the OS process has not exited, which can
+  // be true for several seconds before bin/fm-watch-arm.sh's own confirm loop
+  // (CONFIRM_TIMEOUT, 10s/30s on MSYS) finishes acquiring state/.watch.lock
+  // and writing state/.last-watcher-beat. The turn-end guard's strict,
+  // file-based fm_watcher_healthy check (bin/fm-turnend-guard.sh) applies no
+  // such tolerance by design (docs/turnend-guard.md "Strict watcher check at
+  // the turn boundary"), so a reassuring-but-premature result here left the
+  // guard forcing one bounded follow-up per turn end - each one a full model
+  // turn ending in a no-op reply - for as long as the race lasted. Awaiting
+  // the same readiness signal restoreAfterActionableClose already uses closes
+  // that gap at its source: on an already-established child the readiness
+  // promise is settled, so this adds no delay; only a child still confirming
+  // makes the caller wait, up to the same armReadyTimeoutMs bound.
+  async function confirmArmResult(owner: SessionGeneration, result: ArmResult): Promise<ArmResult> {
+    if (!result.ok) return result;
+    const child = liveArmChild(owner);
+    if (!child) return result;
+    if (await waitForReadiness(child)) return result;
+    // The child may have failed and closed WHILE we waited rather than merely
+    // taking longer than armReadyTimeoutMs to confirm: a closed child already
+    // has its own definitive, asynchronously-delivered "watcher: FAILED"/retry
+    // wake from the existing close-classification path (observeEstablishedArm
+    // / classifyClose), which is the authoritative report for that case. Only
+    // override the message when the SAME child is still genuinely alive and
+    // still the tracked arm child - a real, ongoing, not-yet-failed
+    // confirmation - so a closed/failed child keeps its original message here
+    // and is reported exactly once, by the mechanism that already owns it.
+    if (liveArmChild(owner) !== child) return result;
+    return {
+      ok: true,
+      message: `watcher: confirming - Pi extension's arm child has not yet confirmed a fresh lock and beacon within ${armReadyTimeoutMs}ms; wait for a later notification rather than re-arming again`,
+    };
+  }
+
   async function retireArm(armChild: ChildProcess | null): Promise<boolean> {
     if (!armChild) return true;
     armRetired.add(armChild);
@@ -1222,7 +1259,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand?.("fm-watch-arm-pi", {
     description: "Arm firstmate watcher supervision through the Pi extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = activateOwnedWatch(generation);
+      const result = await confirmArmResult(generation, activateOwnedWatch(generation));
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
   });
@@ -1263,7 +1300,7 @@ export default function (pi: ExtensionAPI) {
       return new Container();
     },
     execute: async () => {
-      const result = activateOwnedWatch(generation);
+      const result = await confirmArmResult(generation, activateOwnedWatch(generation));
       return {
         content: [{ type: "text", text: result.message }],
         details: result,

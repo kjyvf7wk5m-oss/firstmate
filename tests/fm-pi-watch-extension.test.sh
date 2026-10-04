@@ -334,6 +334,101 @@ EOF
   pass "Pi scheduled retry remains extension-owned after another tool call"
 }
 
+# bin/fm-watch-arm.sh's own --restart confirm loop tolerates a freshly forked
+# watcher taking up to CONFIRM_TIMEOUT (10s/30s on MSYS) to acquire
+# state/.watch.lock and write a fresh state/.last-watcher-beat, but the
+# turn-end guard's strict fm_watcher_healthy check (bin/fm-turnend-guard.sh)
+# applies none of that tolerance by design. Before this fix, fm_watch_arm_pi
+# reported "started"/"already owns an arm child" the instant the arm child's
+# OS process existed (liveArmChild), regardless of whether it had actually
+# confirmed that lock and beacon yet - so a caller told "healthy" moments
+# before the still-confirming child's lock/beacon were fresh would see the
+# turn-end guard disagree and force a bounded follow-up, repeatedly, for the
+# whole confirm window. This pins the honest intermediate state during that
+# window, and proves it reverts to the ordinary steady-state message once the
+# same child genuinely confirms - never leaving a healthy watcher stuck
+# reporting "confirming" forever.
+test_pi_tool_confirms_arm_readiness_before_reporting_healthy() {
+  local repo home plugin log stop out status
+  repo="$TMP_ROOT/pi-arm-readiness-root"
+  home="$TMP_ROOT/pi-arm-readiness-home"
+  log="$TMP_ROOT/pi-arm-readiness.log"
+  stop="$TMP_ROOT/pi-arm-readiness.stop"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # A deliberately tiny FM_PI_ARM_READY_TIMEOUT_MS against a 300ms confirm
+  # delay makes the race deterministic instead of timing-flaky: the arm
+  # child's OS process exists (and stays alive) for the whole 300ms before it
+  # ever prints the "watcher: started" line observeEstablishedArm requires.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+sleep 0.3
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+trap 'exit 0' TERM INT
+while [ ! -e "${FM_STOP_FILE:?}" ]; do sleep 0.02; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" FM_PI_ARM_READY_TIMEOUT_MS=50 node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+
+// The first call spawns the arm child and, with the fix, waits up to its own
+// 50ms readiness bound before returning - the real child needs ~300ms to
+// confirm, so this call must report the honest still-confirming state rather
+// than claim the child already started or is otherwise healthy.
+const first = await tool.execute("tool-call-first", {}, undefined, undefined, {});
+if (!first.content[0]?.text.startsWith("watcher: confirming")) {
+  throw new Error(`first call did not report an honest still-confirming state: ${first.content[0]?.text}`);
+}
+if (first.content[0].text.includes("started Pi extension arm child") || /^watcher: unchanged\b/.test(first.content[0].text)) {
+  throw new Error(`first call overclaimed arm health before confirmation: ${first.content[0].text}`);
+}
+
+// A second call made while the same still-unconfirmed child remains alive
+// must get the same honest answer, never the steady-state "already owns an
+// arm child" reassurance a liveness-only check would have given.
+const redundant = await tool.execute("tool-call-during-confirm", {}, undefined, undefined, {});
+if (!redundant.content[0]?.text.startsWith("watcher: confirming")) {
+  throw new Error(`redundant call during confirmation overclaimed health: ${redundant.content[0]?.text}`);
+}
+
+// Once the real child actually confirms (prints "watcher: started" and its
+// readiness promise settles true), a later call must return to the ordinary
+// steady-state message - the fix must not leave a genuinely healthy watcher
+// permanently reporting "confirming".
+let settled = null;
+for (let i = 0; i < 100; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  settled = await tool.execute("tool-call-after-confirm", {}, undefined, undefined, {});
+  if (settled.content[0]?.text.includes("already owns an arm child")) break;
+}
+if (!settled?.content[0]?.text.includes("Pi extension already owns an arm child; no manual re-arm needed")) {
+  throw new Error(`call after confirmation did not return steady-state ownership guidance: ${settled?.content[0]?.text}`);
+}
+writeFileSync(process.env.FM_STOP_FILE, "stop\n");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi arm-readiness confirmation must not overclaim health before the arm child confirms a fresh lock and beacon"
+  [ -z "$out" ] || fail "Pi arm-readiness confirmation test printed output: $out"
+  pass "Pi fm_watch_arm_pi reports an honest confirming state during the arm child's confirm window, then steady-state once it confirms"
+}
+
 test_pi_actionable_close_starts_single_successor_before_delivery() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-continuous-rearm-root"
@@ -5185,6 +5280,7 @@ test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
+test_pi_tool_confirms_arm_readiness_before_reporting_healthy
 test_pi_actionable_close_starts_single_successor_before_delivery
 test_pi_actionable_output_waits_for_predecessor_close
 test_pi_branch_offer_owns_actionable_wake
